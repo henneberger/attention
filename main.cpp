@@ -65,6 +65,16 @@ struct TokenizedDoc {
 };
 static TokenizedDoc tokenize_with_offsets(const llama_vocab * vocab, const std::string & text);
 
+static std::string token_piece(const llama_vocab * vocab, llama_token token) {
+    char buf[256];
+    int n = llama_token_to_piece(vocab, token, buf, sizeof(buf), 0, false);
+    if (n >= 0) return std::string(buf, n);
+    std::vector<char> big(1024);
+    n = llama_token_to_piece(vocab, token, big.data(), (int32_t) big.size(), 0, false);
+    if (n >= 0) return std::string(big.data(), n);
+    return "";
+}
+
 // -----------------------------------------------------------------------------
 // Logging
 
@@ -1146,7 +1156,10 @@ struct Args {
     bool sink_normalization = true;
     bool per_file = false;          // iterate context files individually (tiny windows)
     int n_ubatch = 256;
+    int n_ctx = 0;                  // 0 = choose a bounded per-file context automatically
+    int n_gpu_layers = 99;
     int prune_top_k = 80;           // keep top-K context hits plus nearby lines per query row in JSON
+    int reasoning_steps = 0;        // generate N greedy continuation tokens and average their attention
 };
 
 static std::vector<int> parse_layers(const std::string & raw) {
@@ -1196,12 +1209,15 @@ static Args parse_args(int argc, char ** argv) {
         else if (k == "--layer-fraction-end") a.layer_fraction_end = std::atof(need("--layer-fraction-end").c_str());
         else if (k == "--no-sink-normalization") a.sink_normalization = false;
         else if (k == "--ubatch") a.n_ubatch = std::atoi(need("--ubatch").c_str());
+        else if (k == "--ctx-size" || k == "--ctx") a.n_ctx = std::atoi(need(k.c_str()).c_str());
+        else if (k == "--gpu-layers") a.n_gpu_layers = std::atoi(need("--gpu-layers").c_str());
         else if (k == "--prune-top-k" || k == "--prune") a.prune_top_k = std::atoi(need(k.c_str()).c_str());
         else if (k == "--no-prune") a.prune_top_k = 0;
+        else if (k == "--reasoning-steps") a.reasoning_steps = std::max(0, std::atoi(need("--reasoning-steps").c_str()));
         else { log_line("unknown arg: %s", k.c_str()); std::exit(1); }
     }
     if (a.model.empty() || (a.query_path.empty() && a.query_tree.empty()) || (a.context_path.empty() && a.context_tree.empty())) {
-        log_line("usage: --model FILE (--query FILE | --query-tree DIR) (--context FILE | --context-tree DIR) [--per-file] [--output web/heatmap.tar.gz] [--prune-top-k N] [opts]");
+        log_line("usage: --model FILE (--query FILE | --query-tree DIR) (--context FILE | --context-tree DIR) [--per-file] [--output web/heatmap.tar.gz] [--ctx-size N] [--gpu-layers N] [--prune-top-k N] [--reasoning-steps N] [opts]");
         std::exit(1);
     }
     if (!path_ends_with(a.out_path, ".tar.gz") && !path_ends_with(a.out_path, ".tgz")) {
@@ -1245,7 +1261,7 @@ static int run_per_file_scan(const Args & args) {
     // 3. Load model once, init context.
     llama_backend_init();
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 99;
+    mparams.n_gpu_layers = args.n_gpu_layers;
     llama_model * model = llama_model_load_from_file(args.model.c_str(), mparams);
     if (!model) { log_line("failed to load model %s", args.model.c_str()); return 1; }
     const llama_vocab * vocab = llama_model_get_vocab(model);
@@ -1282,8 +1298,19 @@ static int run_per_file_scan(const Args & args) {
     log_line("query: %zu markdown items / %zu chars / %d prompt tokens",
         query_set.items.size(), query_set.text.size(), total_query_tokens);
 
-    // 5. Init llama context. n_ctx must be enough for biggest (pass-1 + biggest_doc).
-    int n_ctx_budget = 32768; // full Qwen2.5 context — large enough for big files + biggest doc
+    // 5. Init llama context. Keep the default bounded for Metal: KV cache and
+    // attention capture memory scale with n_ctx even when each window is small.
+    int n_ctx_budget = args.n_ctx > 0
+        ? args.n_ctx
+        : std::min(16384, std::max(4096, max_doc_tokens + 8192 + 1024));
+    if (n_ctx_budget < max_doc_tokens + 1024) {
+        log_line("ctx-size %d is too small for largest query item (%d tokens); use --ctx-size %d or more",
+            n_ctx_budget, max_doc_tokens, max_doc_tokens + 1024);
+        llama_model_free(model);
+        llama_backend_free();
+        return 1;
+    }
+    log_line("ctx: n_ctx=%d n_ubatch=%d gpu_layers=%d", n_ctx_budget, args.n_ubatch, args.n_gpu_layers);
 
     CaptureContext cap;
     for (int l : selected_layers) cap.selected_layers.insert(l);
@@ -1341,7 +1368,7 @@ static int run_per_file_scan(const Args & args) {
 
     auto decode_token_run = [&](const std::vector<llama_token> & toks,
                                 int abs_start_pos,
-                                bool capture_active) {
+                                bool capture_active) -> bool {
         for (size_t pos = 0; pos < toks.size(); pos += args.n_ubatch) {
             int batch_n = (int) std::min((size_t) args.n_ubatch, toks.size() - pos);
             llama_batch batch = llama_batch_init(batch_n, 0, 1);
@@ -1357,8 +1384,13 @@ static int run_per_file_scan(const Args & args) {
             cap.batch_query_pos_end = capture_active ? (abs_start_pos + (int) pos + batch_n) : -1;
             int rc = llama_decode(ctx, batch);
             llama_batch_free(batch);
-            if (rc != 0) { log_line("decode failed pos=%d rc=%d", abs_start_pos + (int) pos, rc); std::exit(1); }
+            if (rc != 0) {
+                log_line("decode failed pos=%d rc=%d; try a smaller --ctx-size, smaller --ubatch, or fewer --gpu-layers",
+                    abs_start_pos + (int) pos, rc);
+                return false;
+            }
         }
+        return true;
     };
 
     int per_window_token_budget = (int) cparams.n_ctx - max_doc_tokens - 1024; // safety
@@ -1516,7 +1548,13 @@ static int run_per_file_scan(const Args & args) {
             // Pass 1.
             llama_memory_clear(mem, false);
             llama_set_flash_attn_skip(ctx, nullptr, 0);
-            decode_token_run(pre.tokens, /*abs_start_pos=*/0, /*capture=*/false);
+            if (!decode_token_run(pre.tokens, /*abs_start_pos=*/0, /*capture=*/false)) {
+                write_json_now();
+                llama_free(ctx);
+                llama_model_free(model);
+                llama_backend_free();
+                return 1;
+            }
 
             // Per-query-item pass 2.
             std::vector<std::vector<float>> file_scores(query_set.items.size(),
@@ -1556,7 +1594,13 @@ static int run_per_file_scan(const Args & args) {
 
                 llama_memory_seq_rm(mem, 0, pass1_token_count, -1);
                 llama_set_flash_attn_skip(ctx, skip.data(), (int32_t) skip.size());
-                decode_token_run(item.ct.tokens, /*abs_start_pos=*/doc_token_pos_start, /*capture=*/true);
+                if (!decode_token_run(item.ct.tokens, /*abs_start_pos=*/doc_token_pos_start, /*capture=*/true)) {
+                    write_json_now();
+                    llama_free(ctx);
+                    llama_model_free(model);
+                    llama_backend_free();
+                    return 1;
+                }
 
                 std::vector<CapturedAttention> captures_ordered;
                 for (int l : selected_layers) {
@@ -1684,7 +1728,7 @@ int main(int argc, char ** argv) {
     llama_backend_init();
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 99;
+    mparams.n_gpu_layers = args.n_gpu_layers;
     llama_model * model = llama_model_load_from_file(args.model.c_str(), mparams);
     if (!model) { log_line("failed to load model %s", args.model.c_str()); return 1; }
     const llama_vocab * vocab = llama_model_get_vocab(model);
@@ -1865,8 +1909,16 @@ int main(int argc, char ** argv) {
     CallbackUserData ud{ &cap };
 
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = (uint32_t) doc.tokens.size() + 8;
-    cparams.n_batch = (uint32_t) doc.tokens.size() + 8;
+    int legacy_n_ctx = args.n_ctx > 0 ? args.n_ctx : (int) doc.tokens.size() + 8;
+    if (legacy_n_ctx < (int) doc.tokens.size() + 8) {
+        log_line("ctx-size %d is too small for %zu-token single-window scan; use --ctx-size %zu or more",
+            legacy_n_ctx, doc.tokens.size(), doc.tokens.size() + 8);
+        llama_model_free(model);
+        llama_backend_free();
+        return 1;
+    }
+    cparams.n_ctx = (uint32_t) legacy_n_ctx;
+    cparams.n_batch = (uint32_t) legacy_n_ctx;
     cparams.n_ubatch = (uint32_t) std::min<uint32_t>(args.n_ubatch, (uint32_t) doc.tokens.size());
     cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
     cparams.cb_eval = eval_callback;
@@ -1877,10 +1929,11 @@ int main(int argc, char ** argv) {
     if (!ctx) { log_line("failed to init context"); return 1; }
     t_context_init_done = ggml_time_us();
     log_line("context init (ctx_init=%.2fs)", (t_context_init_done - t_tokenize_done) / 1e6);
+    log_line("ctx: n_ctx=%d n_ubatch=%u gpu_layers=%d", legacy_n_ctx, cparams.n_ubatch, args.n_gpu_layers);
 
     // 9. Pass 1: feed context tokens [0, split) in ubatch-sized pieces.
     log_line("pass 1: %d context tokens", split);
-    auto decode_range = [&](int from, int to_excl, bool capture_active) {
+    auto decode_range = [&](int from, int to_excl, bool capture_active) -> bool {
         for (int pos = from; pos < to_excl; pos += args.n_ubatch) {
             int batch_n = std::min(args.n_ubatch, to_excl - pos);
             llama_batch batch = llama_batch_init(batch_n, 0, 1);
@@ -1901,17 +1954,24 @@ int main(int argc, char ** argv) {
                 cap.batch_query_pos_end = -1;
             }
             int rc = llama_decode(ctx, batch);
-            if (rc != 0) {
-                log_line("llama_decode failed at pos=%d rc=%d", pos, rc);
-                std::exit(1);
-            }
             llama_batch_free(batch);
+            if (rc != 0) {
+                log_line("llama_decode failed at pos=%d rc=%d; try a smaller input, smaller --ubatch, or fewer --gpu-layers",
+                    pos, rc);
+                return false;
+            }
         }
+        return true;
     };
 
     // Pass 1 uses flash attention on every layer (fast). No captures needed.
     llama_set_flash_attn_skip(ctx, nullptr, 0);
-    decode_range(0, split, /*capture_active=*/false);
+    if (!decode_range(0, split, /*capture_active=*/false)) {
+        llama_free(ctx);
+        llama_model_free(model);
+        llama_backend_free();
+        return 1;
+    }
     t_pass1_done = ggml_time_us();
     log_line("pass 1 done (pass1=%.2fs)", (t_pass1_done - t_context_init_done) / 1e6);
 
@@ -1923,7 +1983,12 @@ int main(int argc, char ** argv) {
 
     int qry_total = (int) doc.tokens.size() - split;
     log_line("pass 2: %d query tokens (flash-attn skipped on %zu layers)", qry_total, skip_layers.size());
-    decode_range(split, (int) doc.tokens.size(), /*capture_active=*/true);
+    if (!decode_range(split, (int) doc.tokens.size(), /*capture_active=*/true)) {
+        llama_free(ctx);
+        llama_model_free(model);
+        llama_backend_free();
+        return 1;
+    }
     t_pass2_done = ggml_time_us();
     log_line("pass 2 done; captured layers=%zu (pass2=%.2fs)", cap.per_layer.size(), (t_pass2_done - t_pass1_done) / 1e6);
 

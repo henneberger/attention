@@ -24,6 +24,8 @@ Knobs:
 - `--no-sink-normalization`: disable sink mask.
 - `--per-file`: per-file scan. This is the intended mode for markdown query items.
 - `--ubatch`: micro-batch size.
+- `--ctx-size`: token context size. In `--per-file` mode, default is automatic and capped at 16384 to avoid oversized Metal KV/cache allocations.
+- `--gpu-layers`: number of model layers to offload. Default 99.
 - `--prune-top-k`: JSON score pruning. For each query row, keeps the top K context tokens plus every token on the surrounding +/-5 context lines around each retained token. It also keeps the top K context lines by total attention mass so distributed line-level hits are not pruned away.
 - `--no-prune`: disable JSON score pruning.
 - `--output`: output path. Default `web/heatmap.tar.gz`.
@@ -34,6 +36,7 @@ Defaults:
 - `--context-glob .ts`
 - `--query-glob .mdx`
 - `--ubatch 256`
+- `--gpu-layers 99`
 - `--prune-top-k 80`
 
 For C++ context and Markdown query docs, pass `--context-glob .cpp --query-glob .md`.
@@ -123,6 +126,8 @@ Displayed `query_text` in per-file mode includes synthetic markdown doc headers.
 Per-file is the intended mode for markdown query items: each context file is split into token-budgeted windows and scanned against all markdown query items. Lower memory. A partial `heatmap.tar.gz` is written after each context file with at least one processed window.
 
 Large context windows can be skipped if they still do not fit beside the largest query-item prompt. Empty context files are skipped.
+
+On Metal, out-of-memory failures usually mean the context size or offload is too high for the selected model and query set. Retry with a smaller context, smaller micro-batch, or partial CPU offload, for example `--ctx-size 8192 --ubatch 128 --gpu-layers 40`.
 
 ## Token Cache
 Per-content SHA-256 key. Binary file: magic `TOKN`, version, n, tokens, char_start, char_end. Speed only. Same output.
