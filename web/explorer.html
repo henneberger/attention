@@ -1,0 +1,1215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attention Explorer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2937;
+      --ink-soft: #4b5563;
+      --muted: #6b7280;
+      --line: #d1d5db;
+      --line-soft: #e5e7eb;
+      --bg: #ffffff;
+      --bg-soft: #f9fafb;
+      --panel: #f6f8fa;
+      --accent: #2563eb;
+      --accent-soft: rgba(37, 99, 235, 0.08);
+      --heat: 229, 84, 38;       /* red-orange for context heat */
+      --heat-cool: 37, 99, 235;  /* blue for query side */
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body { display: flex; flex-direction: column; min-height: 100vh; }
+
+    header.top {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    header.top h1 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    header.top .status {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    header.top .spacer { flex: 1; }
+    header.top button, header.top label.file {
+      cursor: pointer;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 4px 10px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+    }
+    header.top input[type=file] { display: none; }
+
+    #app {
+      flex: 1 1 auto;
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+      min-height: 0;
+    }
+    aside.side {
+      border-right: 1px solid var(--line);
+      overflow-y: auto;
+      background: var(--bg-soft);
+    }
+    aside h2 {
+      margin: 0;
+      padding: 10px 14px 6px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .tree { padding: 0 6px 12px; }
+    .tree-node {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      cursor: pointer;
+      border-radius: 4px;
+      color: var(--ink-soft);
+      font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .tree-node:hover { background: rgba(0,0,0,0.04); }
+    .tree-node.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .tree-folder > .tree-node::before {
+      content: "▾";
+      width: 10px;
+      color: var(--muted);
+      display: inline-block;
+      transition: transform 120ms ease;
+    }
+    .tree-folder.collapsed > .tree-node::before {
+      transform: rotate(-90deg);
+    }
+    .tree-folder.collapsed > .tree-children { display: none; }
+    .tree-children { margin-left: 12px; }
+    .tree-file > .tree-node::before {
+      content: "·";
+      width: 10px;
+      color: var(--line);
+      display: inline-block;
+    }
+    .tree-file .badge {
+      margin-left: auto;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+      padding: 0 4px;
+      border-radius: 999px;
+      background: var(--line-soft);
+    }
+    .tree-file.hot .badge {
+      background: rgba(var(--heat), 0.15);
+      color: rgb(var(--heat));
+    }
+
+    main.center {
+      overflow-y: auto;
+      padding: 16px 24px 32px;
+      background: var(--bg);
+      min-width: 0;
+      min-height: 0;
+    }
+    .workbench {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) minmax(240px, 50%);
+    }
+    .results-pane {
+      min-height: 0;
+      overflow-y: auto;
+      border-top: 1px solid var(--line);
+      background: #fff;
+    }
+    .results-pane header {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .results-pane header h3 {
+      margin: 0;
+      font: 600 13px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .results-pane .body {
+      padding: 14px 18px 20px;
+    }
+    .results-pane .empty {
+      color: var(--muted);
+      padding: 18px;
+    }
+    .results-pane .body section {
+      margin-bottom: 14px;
+    }
+    .results-pane .body h4 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    .results-pane .body pre {
+      margin: 0;
+      padding: 10px 12px;
+      background: var(--panel);
+      border-radius: 6px;
+      font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .results-pane .ranked { list-style: none; padding: 0; margin: 0; }
+    .results-pane .ranked li {
+      padding: 10px 0;
+      border-top: 1px solid var(--line-soft);
+      cursor: pointer;
+    }
+    .results-pane .ranked li:first-child { border-top: 0; }
+    .results-pane .ranked li:hover { background: var(--bg-soft); }
+    .results-pane .ranked .top {
+      display: flex; gap: 10px; align-items: baseline;
+      margin-bottom: 5px;
+    }
+    .results-pane .ranked .text { color: var(--ink-soft); font-size: 12px; white-space: pre-wrap; }
+    .results-pane .doc-pill {
+      cursor: pointer;
+    }
+    .results-pane .doc-pill:hover {
+      background: rgba(var(--heat-cool), 0.2);
+    }
+    .file-banner {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line-soft);
+      margin-bottom: 14px;
+    }
+    .file-banner h2 {
+      margin: 0;
+      font: 600 16px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .file-banner .meta {
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .interaction-hint {
+      margin: -6px 0 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    /* Doc view */
+    .doc-view {
+      font: 14px/1.7 -apple-system, BlinkMacSystemFont, sans-serif;
+      max-width: 760px;
+    }
+    .token-heatmap {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--ink);
+    }
+    .line-window {
+      display: block;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .line-window-line {
+      display: block;
+      min-height: 1.55em;
+      color: var(--ink-soft);
+    }
+    .line-window-line.target {
+      color: var(--ink);
+    }
+    .line-window-no {
+      display: inline-block;
+      width: 4ch;
+      margin-right: 1ch;
+      color: var(--muted);
+      user-select: none;
+      text-align: right;
+    }
+    .token-span {
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background 120ms ease, outline-color 120ms ease;
+    }
+    .token-span:hover {
+      outline: 1px solid rgba(var(--heat), 0.6);
+      outline-offset: 1px;
+    }
+    .doc-view .token-span:hover {
+      outline-color: rgba(var(--heat-cool), 0.65);
+    }
+    .query-item-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--ink);
+    }
+    .query-item-row {
+      padding: 3px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .query-item-row:hover {
+      outline: 1px solid rgba(var(--heat-cool), 0.65);
+      outline-offset: 1px;
+    }
+    .markdown-doc {
+      display: block;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--ink);
+    }
+    .markdown-doc-line {
+      display: block;
+      min-height: 1.65em;
+    }
+    .markdown-doc-line .token-span {
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .markdown-doc-line .token-span:hover {
+      outline: 1px solid rgba(var(--heat-cool), 0.65);
+      outline-offset: 1px;
+    }
+    .markdown-doc-no {
+      display: inline-block;
+      width: 4ch;
+      margin-right: 1ch;
+      color: var(--muted);
+      user-select: none;
+      text-align: right;
+    }
+    .source-doc {
+      display: block;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--ink);
+    }
+    .source-doc-line {
+      display: block;
+      min-height: 1.65em;
+    }
+    .source-doc-no {
+      display: inline-block;
+      width: 4ch;
+      margin-right: 1ch;
+      color: var(--muted);
+      user-select: none;
+      text-align: right;
+    }
+    .empty {
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    .doc-pill {
+      display: inline-block;
+      background: rgba(var(--heat-cool), 0.12);
+      color: rgb(var(--heat-cool));
+      padding: 2px 8px;
+      border-radius: 999px;
+      font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      cursor: pointer;
+    }
+    .doc-pill:hover { background: rgba(var(--heat-cool), 0.2); }
+    .lines-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .lines-control select {
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      padding: 3px 6px;
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <h1>Attention Explorer</h1>
+    <span class="status" id="status">Drop heatmap.tar.gz, pick one, or wait for default heatmap…</span>
+    <span class="spacer"></span>
+    <label class="lines-control" for="line-count">Lines
+      <select id="line-count">
+        <option value="1">1</option>
+        <option value="3" selected>3</option>
+        <option value="5">5</option>
+        <option value="7">7</option>
+        <option value="9">9</option>
+      </select>
+    </label>
+    <label class="file" for="file-input">Load JSON…</label>
+    <input id="file-input" type="file" accept=".gz,.tgz,.tar.gz">
+    <button id="reload">Try default heatmap</button>
+  </header>
+
+  <div id="app" hidden>
+    <aside class="side">
+      <h2>Query doc</h2>
+      <div class="tree" id="doc-tree"></div>
+      <h2>Source tree</h2>
+      <div class="tree" id="file-tree"></div>
+    </aside>
+
+    <div class="workbench">
+      <main class="center" id="main">
+        <div class="empty">Select a file or the query doc on the left.</div>
+      </main>
+      <section class="results-pane" id="results-pane">
+        <div class="empty">Click a highlighted token to inspect related lines.</div>
+      </section>
+    </div>
+
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const app = $("app");
+    const status = $("status");
+    const fileInput = $("file-input");
+    const reloadBtn = $("reload");
+    const fileTreeEl = $("file-tree");
+    const docTreeEl = $("doc-tree");
+    const mainEl = $("main");
+    const resultsPane = $("results-pane");
+    const lineCountSelect = $("line-count");
+
+    let data = null;
+    let fileToChunks = new Map(); // file path -> [{idx, chunk, name}]
+    let docToParas = new Map();   // doc path -> [{idx, chunk, name}]
+    let chunkContextScore = [];   // per context-chunk: max attention received
+    let paraSpecificityScore = []; // per query item: peak outgoing attention
+    let activeFile = null;
+    let activeDoc = null;
+    let activeView = "none";      // "file" | "doc"
+    let lineIndexCache = { context: null, query: null };
+    let previewLineCount = 3;
+    let currentDetailView = null;
+
+    // ---- helpers --------------------------------------------------------------
+
+    function escapeHtml(s) {
+      return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+    function fmtPct(v) {
+      const p = v * 100;
+      return p >= 10 ? p.toFixed(1) + "%" : p.toFixed(2) + "%";
+    }
+    function heatColor(intensity) {
+      // intensity in [0, 1]. Returns CSS rgba.
+      if (!intensity || intensity <= 0) return "transparent";
+      const alpha = 0.04 + 0.6 * Math.pow(intensity, 1.3);
+      return `rgba(var(--heat), ${alpha.toFixed(3)})`;
+    }
+
+    function splitLabel(label) {
+      // Token labels are colon-separated: "relative/path.ts:tok_000000".
+      const colonIdx = label.indexOf(":");
+      if (colonIdx >= 0) {
+        return { path: label.slice(0, colonIdx), name: label.slice(colonIdx + 1) };
+      }
+      return { path: label, name: label };
+    }
+    function fullTextForKind(kind) {
+      return kind === "context" ? (data?.context_text || "") : (data?.query_text || "");
+    }
+    function isMarkdownQueryMode() {
+      return data?.metadata?.query_chunk_mode === "markdown_items";
+    }
+    function buildLineIndex(text) {
+      const lines = [];
+      let start = 0;
+      let lineNo = 1;
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === "\n") {
+          lines.push({ start, end: i, text: text.slice(start, i), lineNo });
+          start = i + 1;
+          lineNo++;
+        }
+      }
+      lines.push({ start, end: text.length, text: text.slice(start), lineNo });
+      return lines;
+    }
+    function lineIndexForKind(kind) {
+      if (!lineIndexCache[kind]) lineIndexCache[kind] = buildLineIndex(fullTextForKind(kind));
+      return lineIndexCache[kind];
+    }
+    function findLineForOffset(lines, offset) {
+      if (!lines.length) return null;
+      let lo = 0;
+      let hi = lines.length - 1;
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const line = lines[mid];
+        if (offset < line.start) hi = mid - 1;
+        else if (offset > line.end) lo = mid + 1;
+        else return line;
+      }
+      return lines[Math.max(0, Math.min(lines.length - 1, lo))];
+    }
+    function lineForChunk(kind, chunk) {
+      const lines = lineIndexForKind(kind);
+      const text = chunk?.text || "";
+      const start = Number.isFinite(chunk?.start) ? chunk.start : 0;
+      const end = Number.isFinite(chunk?.end) ? chunk.end : start;
+      let offset = Math.max(start, end - 1);
+      if (text.trim()) {
+        offset = start;
+        for (let i = 0; i < text.length; i++) {
+          if (text[i] !== "\n" && text[i] !== "\r") {
+            offset = start + i;
+            break;
+          }
+        }
+      }
+      offset = Math.max(0, Math.min(fullTextForKind(kind).length, offset));
+      const line = findLineForOffset(lines, offset) || { lineNo: 1, text: "" };
+      const meta = splitLabel(chunk?.label || "");
+      return {
+        path: meta.path,
+        name: meta.name,
+        lineNo: line.lineNo,
+        start: line.start,
+        end: line.end,
+        text: line.text,
+      };
+    }
+    function lineRangeForChunk(kind, chunk) {
+      const lines = lineIndexForKind(kind);
+      const start = Number.isFinite(chunk?.start) ? chunk.start : 0;
+      const end = Number.isFinite(chunk?.end) ? chunk.end : start;
+      const startLine = findLineForOffset(lines, start) || { lineNo: 1, start: 0, end: 0, text: "" };
+      const endLine = findLineForOffset(lines, Math.max(start, end - 1)) || startLine;
+      const meta = splitLabel(chunk?.label || "");
+      return {
+        path: meta.path,
+        name: meta.name,
+        line: { ...startLine, path: meta.path, name: meta.name },
+        startLineNo: startLine.lineNo,
+        endLineNo: endLine.lineNo,
+      };
+    }
+    function chunksForKind(kind) {
+      return kind === "context" ? data.context_chunks : data.query_chunks;
+    }
+    function tokensForLine(kind, line) {
+      const chunks = chunksForKind(kind);
+      return chunks
+        .map((chunk, idx) => ({ idx, chunk, meta: splitLabel(chunk.label || "") }))
+        .filter((item) => {
+          const chunkStart = Number.isFinite(item.chunk?.start) ? item.chunk.start : 0;
+          const chunkEnd = Number.isFinite(item.chunk?.end) ? item.chunk.end : chunkStart;
+          return item.meta.path === line.path && chunkStart < line.end && chunkEnd > line.start;
+        })
+        .sort((a, b) => a.chunk.start - b.chunk.start);
+    }
+    function tokenHeatCss(kind, intensity) {
+      if (!intensity || intensity <= 0) return "transparent";
+      const alpha = 0.04 + 0.58 * Math.pow(intensity, 1.25);
+      const rgb = kind === "query" ? "var(--heat-cool)" : "var(--heat)";
+      return `rgba(${rgb}, ${alpha.toFixed(3)})`;
+    }
+    function renderLineTokenHeatmap(kind, line, scoreFor, maxScoreOverride = null) {
+      const tokens = tokensForLine(kind, line);
+      const maxScore = maxScoreOverride || tokens.reduce((m, t) => Math.max(m, scoreFor(t.idx) || 0), 0) || 1;
+      if (!tokens.length) return escapeHtml(line.text || "");
+      let cursor = line.start;
+      const text = fullTextForKind(kind);
+      const parts = [];
+      tokens.forEach((t) => {
+        const tokenStart = Math.max(line.start, Number.isFinite(t.chunk?.start) ? t.chunk.start : line.start);
+        const tokenEnd = Math.min(line.end, Number.isFinite(t.chunk?.end) ? t.chunk.end : tokenStart);
+        if (tokenEnd <= tokenStart) return;
+        if (tokenStart > cursor) parts.push(escapeHtml(text.slice(cursor, tokenStart)));
+        const score = scoreFor(t.idx) || 0;
+        const intensity = maxScore > 0 ? score / maxScore : 0;
+        parts.push(`<span class="token-span" data-idx="${t.idx}" style="background:${tokenHeatCss(kind, intensity)}">${escapeHtml(text.slice(tokenStart, tokenEnd))}</span>`);
+        cursor = Math.max(cursor, tokenEnd);
+      });
+      if (cursor < line.end) parts.push(escapeHtml(text.slice(cursor, line.end)));
+      return parts.join("");
+    }
+    function maxTokenScoreForLines(kind, lines, scoreFor) {
+      const maxScore = lines.reduce((m, line) => {
+        return tokensForLine(kind, line).reduce((tm, t) => Math.max(tm, scoreFor(t.idx) || 0), m);
+      }, 0);
+      return maxScore || 1;
+    }
+    function previewRadius() {
+      return Math.max(0, Math.floor((previewLineCount - 1) / 2));
+    }
+    function lineWindowForKind(kind, centerLine, radius = previewRadius()) {
+      const lines = lineIndexForKind(kind);
+      const centerIdxRaw = lines.findIndex((l) => l.start === centerLine.start && l.end === centerLine.end);
+      const centerIdx = centerIdxRaw >= 0 ? centerIdxRaw : Math.max(0, lines.findIndex((l) => l.lineNo === centerLine.lineNo));
+      const start = Math.max(0, centerIdx - radius);
+      const end = Math.min(lines.length, centerIdx + radius + 1);
+      const meta = { path: centerLine.path, name: centerLine.name };
+      return lines.slice(start, end).map((line) => ({ ...line, ...meta }));
+    }
+    function lineWindowForRange(kind, range, radius = previewRadius()) {
+      const lines = lineIndexForKind(kind);
+      const startIdxRaw = lines.findIndex((l) => l.start === range.line.start && l.end === range.line.end);
+      const startIdx = startIdxRaw >= 0 ? startIdxRaw : Math.max(0, lines.findIndex((l) => l.lineNo === range.startLineNo));
+      const endIdxRaw = lines.findIndex((l) => l.lineNo === range.endLineNo && l.start >= range.line.start);
+      const endIdx = endIdxRaw >= 0 ? endIdxRaw : startIdx;
+      const start = Math.max(0, startIdx - radius);
+      const end = Math.min(lines.length, endIdx + radius + 1);
+      const meta = { path: range.line.path, name: range.line.name };
+      return lines.slice(start, end).map((line) => ({ ...line, ...meta }));
+    }
+    function renderLineWindowHeatmap(kind, centerLine, scoreFor) {
+      const windowLines = lineWindowForKind(kind, centerLine);
+      const maxScore = maxTokenScoreForLines(kind, windowLines, scoreFor);
+      return `<span class="line-window ${kind}">${windowLines.map((line) => {
+        const isTarget = line.lineNo === centerLine.lineNo;
+        return `<span class="line-window-line${isTarget ? " target" : ""}"><span class="line-window-no">${line.lineNo}</span>${renderLineTokenHeatmap(kind, line, scoreFor, maxScore)}</span>`;
+      }).join("")}</span>`;
+    }
+    function renderLineRangeHeatmap(kind, range, scoreFor) {
+      const windowLines = lineWindowForRange(kind, range);
+      const maxScore = maxTokenScoreForLines(kind, windowLines, scoreFor);
+      return `<span class="line-window ${kind}">${windowLines.map((line) => {
+        const isTarget = range.startLineNo <= line.lineNo && line.lineNo <= range.endLineNo;
+        return `<span class="line-window-line${isTarget ? " target" : ""}"><span class="line-window-no">${line.lineNo}</span>${renderLineTokenHeatmap(kind, line, scoreFor, maxScore)}</span>`;
+      }).join("")}</span>`;
+    }
+    function renderTokenHeatmap(items, scoreFor, heatVar, onOpen, titleFor) {
+      const wrap = document.createElement("div");
+      wrap.className = "token-heatmap";
+      const maxScore = items.reduce((m, it) => Math.max(m, scoreFor(it)), 0) || 1;
+      items.forEach((item) => {
+        const score = scoreFor(item);
+        const intensity = maxScore > 0 ? score / maxScore : 0;
+      const span = document.createElement("span");
+      span.className = "token-span";
+        span.dataset.idx = String(item.idx);
+        span.textContent = item.chunk.text || "";
+        span.title = titleFor ? titleFor(item, score) : `${item.name} · ${fmtPct(score)}`;
+        span.style.background = heatVar(intensity);
+        span.addEventListener("click", () => onOpen && onOpen(item));
+        wrap.appendChild(span);
+      });
+      return wrap;
+    }
+    function renderInteractionHint() {
+      const hint = document.createElement("div");
+      hint.className = "interaction-hint";
+      hint.textContent = "Click a highlighted attention span to inspect the related lines.";
+      return hint;
+    }
+    function renderQueryItemList(items) {
+      const wrap = document.createElement("div");
+      wrap.className = "query-item-list";
+      const maxScore = items.reduce((m, it) => Math.max(m, paraSpecificityScore[it.idx] || 0), 0) || 1;
+      items.forEach((item) => {
+        const score = paraSpecificityScore[item.idx] || 0;
+        const intensity = maxScore > 0 ? score / maxScore : 0;
+        const line = lineForChunk("query", item.chunk);
+        const row = document.createElement("div");
+        row.className = "query-item-row token-span";
+        row.dataset.idx = String(item.idx);
+        row.textContent = item.chunk.text || "";
+        row.title = `${line.path}:${line.lineNo}`;
+        row.style.background = tokenHeatCss("query", intensity);
+        row.addEventListener("click", () => openDetailPane({ kind: "query", idx: item.idx }));
+        wrap.appendChild(row);
+      });
+      return wrap;
+    }
+    function queryDocContentBounds(path) {
+      const text = fullTextForKind("query");
+      const header = `\n## === ${path} ===\n`;
+      const headerStart = text.indexOf(header);
+      if (headerStart < 0) return null;
+      const start = headerStart + header.length;
+      const nextHeader = text.indexOf("\n## === ", start);
+      return { start, end: nextHeader >= 0 ? nextHeader : text.length };
+    }
+    function renderMarkdownDoc(path, items) {
+      const bounds = queryDocContentBounds(path);
+      if (!bounds) return renderQueryItemList(items);
+
+      const lines = lineIndexForKind("query")
+        .filter((line) => line.start >= bounds.start && line.start < bounds.end);
+      const wrap = document.createElement("div");
+      wrap.className = "markdown-doc";
+      const maxScore = items.reduce((m, it) => Math.max(m, paraSpecificityScore[it.idx] || 0), 0) || 1;
+      lines.forEach((line, i) => {
+        const docLine = { ...line, path, name: path };
+        const row = document.createElement("span");
+        row.className = "markdown-doc-line";
+        row.innerHTML = `<span class="markdown-doc-no">${i + 1}</span>${renderLineTokenHeatmap("query", docLine, (qIdx) => paraSpecificityScore[qIdx] || 0, maxScore)}`;
+        wrap.appendChild(row);
+      });
+      wrap.querySelectorAll(".token-span[data-idx]").forEach((token) => {
+        const idx = Number(token.dataset.idx);
+        const q = data.query_chunks[idx];
+        const range = q ? lineRangeForChunk("query", q) : null;
+        if (range) token.title = `${path}:${lineRangeLabel(range)}`;
+        token.addEventListener("click", () => openDetailPane({ kind: "query", idx }));
+      });
+      return wrap;
+    }
+    function renderSourceFile(path, items) {
+      const wrap = document.createElement("div");
+      wrap.className = "source-doc";
+      if (!items.length) return wrap;
+
+      const minStart = items.reduce((m, it) => Math.min(m, Number.isFinite(it.chunk?.start) ? it.chunk.start : m), Infinity);
+      const maxEnd = items.reduce((m, it) => Math.max(m, Number.isFinite(it.chunk?.end) ? it.chunk.end : m), -Infinity);
+      const lines = lineIndexForKind("context")
+        .filter((line) => line.end > minStart && line.start < maxEnd)
+        .map((line) => ({ ...line, path, name: path }));
+
+      lines.forEach((line, i) => {
+        const row = document.createElement("span");
+        row.className = "source-doc-line";
+        row.innerHTML = `<span class="source-doc-no">${i + 1}</span>${renderLineTokenHeatmap("context", line, (ctxIdx) => chunkContextScore[ctxIdx] || 0)}`;
+        wrap.appendChild(row);
+      });
+      wrap.querySelectorAll(".token-span[data-idx]").forEach((token) => {
+        token.addEventListener("click", () => openDetailPane({ kind: "context", idx: Number(token.dataset.idx) }));
+      });
+      return wrap;
+    }
+
+    // ---- data setup -----------------------------------------------------------
+
+    function applyData(payload) {
+      data = payload;
+      lineIndexCache = { context: null, query: null };
+
+      // For each context token, compute the column score (max attention any
+      // query item sends to it).
+      const nContextChunks = data.context_chunks.length;
+      const nQueryChunks = data.query_chunks.length;
+      chunkContextScore = Array(nContextChunks).fill(0);
+      for (let q = 0; q < nQueryChunks; q++) {
+        const row = data.scores[q] || [];
+        for (let c = 0; c < nContextChunks; c++) {
+          const v = row[c] || 0;
+          if (v > chunkContextScore[c]) chunkContextScore[c] = v;
+        }
+      }
+
+      // Group context tokens by file.
+      fileToChunks = new Map();
+      data.context_chunks.forEach((chunk, idx) => {
+        const { path, name } = splitLabel(chunk.label);
+        if (!fileToChunks.has(path)) fileToChunks.set(path, []);
+        fileToChunks.get(path).push({ idx, chunk, name });
+      });
+      fileToChunks.forEach((arr) => arr.sort((a, b) => a.chunk.start - b.chunk.start));
+
+      // Group query items by doc.
+      docToParas = new Map();
+      paraSpecificityScore = Array(nQueryChunks).fill(0);
+      data.query_chunks.forEach((chunk, idx) => {
+        const { path, name } = splitLabel(chunk.label);
+        if (!docToParas.has(path)) docToParas.set(path, []);
+        docToParas.get(path).push({ idx, chunk, name });
+        // peak outgoing attention for this token
+        const row = data.scores[idx] || [];
+        let peak = 0;
+        for (const v of row) if (v > peak) peak = v;
+        paraSpecificityScore[idx] = peak;
+      });
+      docToParas.forEach((arr) => arr.sort((a, b) => a.chunk.start - b.chunk.start));
+
+      renderTree();
+      renderDocTree();
+
+      const firstDoc = Array.from(docToParas.keys()).sort()[0];
+      if (firstDoc) selectDoc(firstDoc);
+      else {
+        const firstFile = Array.from(fileToChunks.keys()).sort()[0];
+        if (firstFile) selectFile(firstFile);
+      }
+
+      app.hidden = false;
+    }
+
+    // ---- tree -----------------------------------------------------------------
+
+    function buildTree(paths) {
+      const root = { dirs: new Map(), files: [] };
+      for (const path of paths) {
+        const parts = path.split("/");
+        let node = root;
+        for (let i = 0; i < parts.length - 1; i++) {
+          if (!node.dirs.has(parts[i])) node.dirs.set(parts[i], { dirs: new Map(), files: [] });
+          node = node.dirs.get(parts[i]);
+        }
+        node.files.push({ path, name: parts[parts.length - 1] });
+      }
+      return root;
+    }
+
+    function renderTreeNode(node, depth, container) {
+      const sortedDirs = Array.from(node.dirs.keys()).sort();
+      for (const dirName of sortedDirs) {
+        const dirEl = document.createElement("div");
+        dirEl.className = "tree-folder";
+        const head = document.createElement("div");
+        head.className = "tree-node";
+        head.style.paddingLeft = (depth * 10 + 6) + "px";
+        head.innerHTML = `<span>${escapeHtml(dirName)}</span>`;
+        head.addEventListener("click", () => {
+          dirEl.classList.toggle("collapsed");
+        });
+        dirEl.appendChild(head);
+        const children = document.createElement("div");
+        children.className = "tree-children";
+        dirEl.appendChild(children);
+        renderTreeNode(node.dirs.get(dirName), depth + 1, children);
+        container.appendChild(dirEl);
+      }
+      node.files.sort((a, b) => a.name.localeCompare(b.name));
+      for (const file of node.files) {
+        const items = fileToChunks.get(file.path) || [];
+        const maxScore = items.reduce((m, it) => Math.max(m, chunkContextScore[it.idx]), 0);
+        const fileEl = document.createElement("div");
+        fileEl.className = "tree-file" + (maxScore > 0.05 ? " hot" : "");
+        fileEl.dataset.path = file.path;
+        const head = document.createElement("div");
+        head.className = "tree-node";
+        head.style.paddingLeft = (depth * 10 + 6) + "px";
+        head.innerHTML = `<span>${escapeHtml(file.name)}</span><span class="badge">${fmtPct(maxScore)}</span>`;
+        head.addEventListener("click", () => selectFile(file.path));
+        fileEl.appendChild(head);
+        container.appendChild(fileEl);
+      }
+    }
+
+    function renderTree() {
+      fileTreeEl.innerHTML = "";
+      const paths = Array.from(fileToChunks.keys());
+      const tree = buildTree(paths);
+      renderTreeNode(tree, 0, fileTreeEl);
+    }
+
+    function renderDocTree() {
+      docTreeEl.innerHTML = "";
+      const paths = Array.from(docToParas.keys());
+      if (paths.length === 0) return;
+      const tree = buildTree(paths);
+      renderDocTreeNode(tree, 0, docTreeEl);
+    }
+
+    function renderDocTreeNode(node, depth, container) {
+      const sortedDirs = Array.from(node.dirs.keys()).sort();
+      for (const dirName of sortedDirs) {
+        const dirEl = document.createElement("div");
+        dirEl.className = "tree-folder";
+        const head = document.createElement("div");
+        head.className = "tree-node";
+        head.style.paddingLeft = (depth * 10 + 6) + "px";
+        head.innerHTML = `<span>${escapeHtml(dirName)}</span>`;
+        head.addEventListener("click", () => dirEl.classList.toggle("collapsed"));
+        dirEl.appendChild(head);
+        const children = document.createElement("div");
+        children.className = "tree-children";
+        dirEl.appendChild(children);
+        renderDocTreeNode(node.dirs.get(dirName), depth + 1, children);
+        container.appendChild(dirEl);
+      }
+      node.files.sort((a, b) => a.name.localeCompare(b.name));
+      for (const file of node.files) {
+        const paras = docToParas.get(file.path) || [];
+        const peak = paras.reduce((m, p) => Math.max(m, paraSpecificityScore[p.idx]), 0);
+        const el = document.createElement("div");
+        el.className = "tree-file" + (peak > 0.05 ? " hot" : "");
+        el.dataset.doc = file.path;
+        const head = document.createElement("div");
+        head.className = "tree-node";
+        head.style.paddingLeft = (depth * 10 + 6) + "px";
+        head.innerHTML = `<span>${escapeHtml(file.name)}</span><span class="badge">${paras.length} ¶</span>`;
+        head.addEventListener("click", () => selectDoc(file.path));
+        el.appendChild(head);
+        container.appendChild(el);
+      }
+    }
+
+    // ---- file view ------------------------------------------------------------
+
+    function selectFile(path) {
+      activeView = "file";
+      activeFile = path;
+      const items = fileToChunks.get(path) || [];
+
+      // mark active in tree
+      document.querySelectorAll(".tree-node.active").forEach((n) => n.classList.remove("active"));
+      const treeFile = document.querySelector(`.tree-file[data-path="${CSS.escape(path)}"] > .tree-node`);
+      if (treeFile) treeFile.classList.add("active");
+
+      // banner + tokens
+      mainEl.innerHTML = "";
+      const banner = document.createElement("div");
+      banner.className = "file-banner";
+      banner.innerHTML = `<h2>${escapeHtml(path)}</h2><span class="meta">${items.length} tokens</span>`;
+      mainEl.appendChild(banner);
+      mainEl.appendChild(renderInteractionHint());
+
+      mainEl.appendChild(renderSourceFile(path, items));
+    }
+
+    // ---- ranking helpers ------------------------------------------------------
+
+    function topLineRows(rows, k) {
+      return rows
+        .map((r) => ({ ...r, startLineNo: r.line.lineNo, endLineNo: r.line.lineNo }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, k);
+    }
+    function lineRangeLabel(row) {
+      return row.startLineNo === row.endLineNo
+        ? `line ${row.startLineNo}`
+        : `lines ${row.startLineNo}-${row.endLineNo}`;
+    }
+    function topQueryLinesForContext(contextIdx, k = 5) {
+      const byLine = new Map();
+      data.query_chunks.forEach((q, qIdx) => {
+        const score = (data.scores[qIdx] || [])[contextIdx] || 0;
+        if (score <= 0) return;
+        const range = lineRangeForChunk("query", q);
+        const key = `${range.path}:${range.startLineNo}-${range.endLineNo}`;
+        const row = byLine.get(key) || {
+          key,
+          line: range.line,
+          startLineNo: range.startLineNo,
+          endLineNo: range.endLineNo,
+          score: 0,
+          qIdx,
+          bestTokenScore: 0,
+        };
+        row.score += score;
+        if (score > row.bestTokenScore) {
+          row.bestTokenScore = score;
+          row.qIdx = qIdx;
+        }
+        byLine.set(key, row);
+      });
+      return Array.from(byLine.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, k);
+    }
+
+    // ---- detail pane ----------------------------------------------------------
+
+    function openDetailPane(view) {
+      currentDetailView = view;
+      renderDetailPane(view);
+    }
+    function openContextResult(idx) {
+      const { path } = splitLabel(data.context_chunks[idx].label);
+      selectFile(path);
+      requestAnimationFrame(() => {
+        scrollTokenIntoView(idx);
+        openDetailPane({ kind: "context", idx });
+      });
+    }
+    function openQueryResult(idx) {
+      const { path } = splitLabel(data.query_chunks[idx].label);
+      selectDoc(path);
+      requestAnimationFrame(() => {
+        scrollTokenIntoView(idx);
+        openDetailPane({ kind: "query", idx });
+      });
+    }
+    function scrollTokenIntoView(idx) {
+      const token = mainEl.querySelector(`.token-span[data-idx="${CSS.escape(String(idx))}"]`);
+      if (!token) return;
+      token.scrollIntoView({ block: "center", inline: "nearest" });
+    }
+    function renderDetailPane(view) {
+      if (!view) return;
+      let html;
+      if (view.kind === "context") {
+        const cc = data.context_chunks[view.idx];
+        const contextLine = lineForChunk("context", cc);
+        const label = `${contextLine.path}:${contextLine.lineNo}`;
+        const ranked = topQueryLinesForContext(view.idx, 50);
+        const maxScore = ranked.reduce((m, r) => Math.max(m, r.score), 0) || 1;
+        const items = ranked.map((r) => {
+          return `
+            <li data-q-idx="${r.qIdx}">
+              <div class="top">
+                <span><span class="doc-pill" style="cursor:default;">${escapeHtml(r.line.path)}</span> · ${lineRangeLabel(r)}</span>
+              </div>
+              <div class="text">${renderLineRangeHeatmap("query", r, (qIdx) => (data.scores[qIdx] || [])[view.idx] || 0)}</div>
+            </li>
+            `;
+        }).join("");
+        html = `
+          <header>
+            <h3>${escapeHtml(label)}</h3>
+          </header>
+          <div class="body">
+            <section>
+              <h4>Contributing query lines (${ranked.length})</h4>
+              <ol class="ranked clickable">${items || `<li><div class="text">No query content attends to this token.</div></li>`}</ol>
+            </section>
+          </div>`;
+      } else if (view.kind === "query") {
+        const q = data.query_chunks[view.idx];
+        const queryLine = lineForChunk("query", q);
+        const ranked = topContextLinesForQuery(view.idx, 50);
+        const maxScore = ranked.reduce((m, r) => Math.max(m, r.score), 0) || 1;
+        const items = ranked.map((r) => `
+          <li data-context-idx="${r.idx}">
+            <div class="top">
+              <span class="doc-pill" data-context-idx="${r.idx}">${escapeHtml(r.line.path)} · ${lineRangeLabel(r)}</span>
+            </div>
+            <div class="text">${renderLineRangeHeatmap("context", r, (ctxIdx) => (data.scores[view.idx] || [])[ctxIdx] || 0)}</div>
+          </li>
+        `).join("");
+        html = `
+          <header>
+            <h3>${escapeHtml(`${queryLine.path}:${queryLine.lineNo}`)}</h3>
+          </header>
+          <div class="body">
+            <section>
+              <h4>Top context lines (${ranked.length})</h4>
+              <ol class="ranked clickable">${items || `<li><div class="text">No attention.</div></li>`}</ol>
+            </section>
+          </div>`;
+      }
+      resultsPane.innerHTML = html;
+      resultsPane.querySelectorAll(".ranked.clickable > li").forEach((li) => {
+        li.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (li.dataset.qIdx !== undefined) {
+            openQueryResult(Number(li.dataset.qIdx));
+          } else if (li.dataset.contextIdx !== undefined) {
+            openContextResult(Number(li.dataset.contextIdx));
+          }
+        });
+      });
+      resultsPane.querySelectorAll(".doc-pill").forEach((p) => {
+        p.addEventListener("click", (ev) => {
+          if (p.dataset.contextIdx === undefined) return;
+          ev.stopPropagation();
+          openContextResult(Number(p.dataset.contextIdx));
+        });
+      });
+      resultsPane.scrollTop = 0;
+    }
+    lineCountSelect.addEventListener("change", () => {
+      previewLineCount = Number(lineCountSelect.value) || 3;
+      if (currentDetailView) renderDetailPane(currentDetailView);
+    });
+
+    // ---- doc view -------------------------------------------------------------
+
+    function selectDoc(path) {
+      activeView = "doc";
+      activeDoc = path;
+      document.querySelectorAll(".tree-node.active").forEach((n) => n.classList.remove("active"));
+      const docNode = document.querySelector(`.tree-file[data-doc="${CSS.escape(path)}"] > .tree-node`);
+      if (docNode) docNode.classList.add("active");
+
+      const paras = docToParas.get(path) || [];
+      mainEl.innerHTML = "";
+      const banner = document.createElement("div");
+      banner.className = "file-banner";
+      banner.innerHTML = `<h2>${escapeHtml(path)}</h2><span class="meta">${paras.length} items</span>`;
+      mainEl.appendChild(banner);
+      mainEl.appendChild(renderInteractionHint());
+
+      const wrap = document.createElement("div");
+      wrap.className = "doc-view";
+      if (isMarkdownQueryMode()) {
+        wrap.appendChild(renderMarkdownDoc(path, paras));
+        mainEl.appendChild(wrap);
+        return;
+      }
+      wrap.appendChild(renderTokenHeatmap(
+        paras,
+        (p) => paraSpecificityScore[p.idx] || 0,
+        (intensity) => {
+          if (!intensity || intensity <= 0) return "transparent";
+          const alpha = 0.04 + 0.5 * Math.pow(intensity, 1.2);
+          return `rgba(var(--heat-cool), ${alpha.toFixed(3)})`;
+        },
+        (p) => openDetailPane({ kind: "query", idx: p.idx }),
+        (p, score) => {
+          const line = lineForChunk("query", p.chunk);
+          return `${line.path}:${line.lineNo}`;
+        }
+      ));
+      mainEl.appendChild(wrap);
+    }
+
+    function topContextLinesForQuery(qIdx, k = 5) {
+      const byLine = new Map();
+      const row = data.scores[qIdx] || [];
+      data.context_chunks.forEach((chunk, idx) => {
+        const score = row[idx] || 0;
+        if (score <= 0) return;
+        const line = lineForChunk("context", chunk);
+        const key = `${line.path}:${line.lineNo}`;
+        const item = byLine.get(key) || {
+          key,
+          line,
+          score: 0,
+          idx,
+          bestTokenScore: 0,
+        };
+        item.score += score;
+        if (score > item.bestTokenScore) {
+          item.bestTokenScore = score;
+          item.idx = idx;
+        }
+        byLine.set(key, item);
+      });
+      return topLineRows(Array.from(byLine.values()), k);
+    }
+
+    // ---- loading --------------------------------------------------------------
+
+    function loadFromText(text, label) {
+      try {
+        const payload = JSON.parse(text);
+        applyData(payload);
+        status.textContent = `Loaded ${label} — ${data.query_chunks.length} query items × ${data.context_chunks.length} context tokens`;
+      } catch (err) {
+        status.textContent = `Failed to load ${label}: ${err.message}`;
+        app.hidden = true;
+      }
+    }
+    async function gunzip(bytes) {
+      if (typeof DecompressionStream === "undefined") {
+        throw new Error("browser does not support gzip decompression");
+      }
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+    function isGzip(bytes) {
+      return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+    }
+    function tarString(bytes, start, length) {
+      let end = start;
+      const max = start + length;
+      while (end < max && bytes[end] !== 0) end++;
+      return new TextDecoder().decode(bytes.slice(start, end));
+    }
+    function extractJsonFromTar(bytes) {
+      for (let offset = 0; offset + 512 <= bytes.length; ) {
+        const name = tarString(bytes, offset, 100);
+        if (!name) break;
+        const sizeRaw = tarString(bytes, offset + 124, 12).trim();
+        const size = parseInt(sizeRaw || "0", 8);
+        if (!Number.isFinite(size)) throw new Error("invalid tar entry size");
+        const bodyStart = offset + 512;
+        const bodyEnd = bodyStart + size;
+        if (bodyEnd > bytes.length) throw new Error("truncated tar entry");
+        const baseName = name.split("/").pop() || name;
+        const typeFlag = bytes[offset + 156];
+        const isRegularFile = typeFlag === 0 || typeFlag === 48; // NUL or "0"
+        const isMetadata = name.startsWith("PaxHeader/") || baseName.startsWith("._");
+        if (isRegularFile && !isMetadata && baseName.endsWith(".json")) {
+          return new TextDecoder().decode(bytes.slice(bodyStart, bodyEnd));
+        }
+        offset = bodyStart + Math.ceil(size / 512) * 512;
+      }
+      throw new Error("tar archive has no JSON file");
+    }
+    async function loadTarGzBytes(bytes, label) {
+      const tarBytes = isGzip(bytes) ? await gunzip(bytes) : bytes;
+      loadFromText(extractJsonFromTar(tarBytes), label);
+    }
+    function isTarGzName(name) {
+      return /\.t(?:ar\.)?gz$/i.test(name) || /\.gz$/i.test(name);
+    }
+    async function loadFile(file) {
+      if (!isTarGzName(file.name)) {
+        status.textContent = `Expected a .tar.gz heatmap, got ${file.name}`;
+        app.hidden = true;
+        return;
+      }
+      try {
+        await loadTarGzBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+      } catch (err) {
+        status.textContent = `Failed to load ${file.name}: ${err.message}`;
+        app.hidden = true;
+      }
+    }
+    async function tryFetchDefault() {
+      const path = "./heatmap.tar.gz";
+      try {
+        const res = await fetch(path, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await loadTarGzBytes(new Uint8Array(await res.arrayBuffer()), path);
+      } catch (err) {
+        status.textContent = `No ${path} (${err.message}). Pick one above.`;
+      }
+    }
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files[0]) loadFile(fileInput.files[0]);
+    });
+    reloadBtn.addEventListener("click", tryFetchDefault);
+    ["dragenter", "dragover"].forEach((t) => {
+      document.body.addEventListener(t, (e) => { e.preventDefault(); });
+    });
+    document.body.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) loadFile(f);
+    });
+
+    if (location.protocol !== "file:") tryFetchDefault();
+  </script>
+</body>
+</html>

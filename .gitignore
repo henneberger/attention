@@ -1,0 +1,38 @@
+# Build output
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.o
+*.a
+*.dylib
+*.so
+*.dll
+*.exe
+
+# Local generated data
+cache/
+web/heatmap.json
+web/heatmap.tar.gz
+
+# Large local model files
+models/
+*.gguf
+*.bin
+*.safetensors
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Logs and scratch files
+*.log
+*.tmp
+
+# Python cache
+__pycache__/
+*.py[cod]
