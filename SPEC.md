@@ -24,7 +24,7 @@ Knobs:
 - `--no-sink-normalization`: disable sink mask.
 - `--per-file`: per-file scan. This is the intended mode for markdown query items.
 - `--ubatch`: micro-batch size.
-- `--prune-top-k`: JSON score pruning. For each query row, keeps the top K context tokens plus every token on the surrounding +/-5 context lines around each retained token.
+- `--prune-top-k`: JSON score pruning. For each query row, keeps the top K context tokens plus every token on the surrounding +/-5 context lines around each retained token. It also keeps the top K context lines by total attention mass so distributed line-level hits are not pruned away.
 - `--no-prune`: disable JSON score pruning.
 - `--output`: output path. Default `web/heatmap.tar.gz`.
 - `--json`: unsupported; use `--output FILE.tar.gz`.
@@ -130,7 +130,7 @@ Per-content SHA-256 key. Binary file: magic `TOKN`, version, n, tokens, char_sta
 ## Viewer
 `web/explorer.html` loads `web/heatmap.tar.gz` by default. Drop or pick another `.tar.gz`.
 
-Shows query docs first, then source tree. On load it selects the first query doc. Query docs render as full markdown with line numbers and highlighted query items. Source files render token heat with line numbers. Clicking a highlighted token opens an inline results pane with ranked related lines. The `Lines` selector controls how many lines each preview shows; default is 3.
+Shows query docs first, then source tree. On load it selects the first query doc. Query docs render as full markdown with line numbers and highlighted query items. Source files render token heat with line numbers. Clicking a highlighted query item opens an inline results pane with ranked source spans by summed attention mass. Clicking a highlighted source token shows contributing query chunks.
 
 ## Code Map
 All in `main.cpp`:

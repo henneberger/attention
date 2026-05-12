@@ -1056,9 +1056,15 @@ struct JsonOut {
             if (prune_top_k > 0 && prune_top_k < (int) m[i].size()) {
                 std::vector<std::pair<float, size_t>> ranked;
                 ranked.reserve(m[i].size());
+                std::vector<double> line_mass((size_t) max_line + 1, 0.0);
                 for (size_t j = 0; j < m[i].size(); j++) {
                     float v = m[i][j];
-                    if (std::isfinite(v) && v > 0) ranked.push_back({v, j});
+                    if (std::isfinite(v) && v > 0) {
+                        ranked.push_back({v, j});
+                        if (j < column_lines.size()) {
+                            line_mass[(size_t) column_lines[j]] += v;
+                        }
+                    }
                 }
                 int k = std::min(prune_top_k, (int) ranked.size());
                 std::partial_sort(
@@ -1076,6 +1082,30 @@ struct JsonOut {
                     int last_line = std::min(max_line, hot_line + retain_line_radius);
                     for (int line = first_line; line <= last_line; line++) {
                         for (size_t col : columns_by_line[(size_t) line]) {
+                            keep.insert(col);
+                        }
+                    }
+                }
+
+                // Also retain the highest total-mass lines. A line can be
+                // important because many modest-token attentions add up, even
+                // when no single token makes the top-token list above.
+                std::vector<std::pair<double, int>> ranked_lines;
+                ranked_lines.reserve(line_mass.size());
+                for (int line = 0; line <= max_line; line++) {
+                    if (line_mass[(size_t) line] > 0) ranked_lines.push_back({line_mass[(size_t) line], line});
+                }
+                int line_k = std::min(prune_top_k, (int) ranked_lines.size());
+                if (line_k > 0) {
+                    std::partial_sort(
+                        ranked_lines.begin(),
+                        ranked_lines.begin() + line_k,
+                        ranked_lines.end(),
+                        [](const auto & a, const auto & b) { return a.first > b.first; }
+                    );
+                    for (int r = 0; r < line_k; r++) {
+                        int hot_line = ranked_lines[r].second;
+                        for (size_t col : columns_by_line[(size_t) hot_line]) {
                             keep.insert(col);
                         }
                     }

@@ -357,21 +357,6 @@
       cursor: pointer;
     }
     .doc-pill:hover { background: rgba(var(--heat-cool), 0.2); }
-    .lines-control {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .lines-control select {
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      background: #fff;
-      color: var(--ink);
-      font: inherit;
-      padding: 3px 6px;
-    }
   </style>
 </head>
 <body>
@@ -379,15 +364,6 @@
     <h1>Attention Explorer</h1>
     <span class="status" id="status">Drop heatmap.tar.gz, pick one, or wait for default heatmap…</span>
     <span class="spacer"></span>
-    <label class="lines-control" for="line-count">Lines
-      <select id="line-count">
-        <option value="1">1</option>
-        <option value="3" selected>3</option>
-        <option value="5">5</option>
-        <option value="7">7</option>
-        <option value="9">9</option>
-      </select>
-    </label>
     <label class="file" for="file-input">Load JSON…</label>
     <input id="file-input" type="file" accept=".gz,.tgz,.tar.gz">
     <button id="reload">Try default heatmap</button>
@@ -422,7 +398,6 @@
     const docTreeEl = $("doc-tree");
     const mainEl = $("main");
     const resultsPane = $("results-pane");
-    const lineCountSelect = $("line-count");
 
     let data = null;
     let fileToChunks = new Map(); // file path -> [{idx, chunk, name}]
@@ -433,7 +408,6 @@
     let activeDoc = null;
     let activeView = "none";      // "file" | "doc"
     let lineIndexCache = { context: null, query: null };
-    let previewLineCount = 3;
     let currentDetailView = null;
 
     // ---- helpers --------------------------------------------------------------
@@ -586,28 +560,21 @@
       }, 0);
       return maxScore || 1;
     }
-    function previewRadius() {
-      return Math.max(0, Math.floor((previewLineCount - 1) / 2));
-    }
-    function lineWindowForKind(kind, centerLine, radius = previewRadius()) {
+    function lineWindowForKind(kind, centerLine) {
       const lines = lineIndexForKind(kind);
       const centerIdxRaw = lines.findIndex((l) => l.start === centerLine.start && l.end === centerLine.end);
       const centerIdx = centerIdxRaw >= 0 ? centerIdxRaw : Math.max(0, lines.findIndex((l) => l.lineNo === centerLine.lineNo));
-      const start = Math.max(0, centerIdx - radius);
-      const end = Math.min(lines.length, centerIdx + radius + 1);
       const meta = { path: centerLine.path, name: centerLine.name };
-      return lines.slice(start, end).map((line) => ({ ...line, ...meta }));
+      return lines.slice(centerIdx, centerIdx + 1).map((line) => ({ ...line, ...meta }));
     }
-    function lineWindowForRange(kind, range, radius = previewRadius()) {
+    function linesForRange(kind, range) {
       const lines = lineIndexForKind(kind);
       const startIdxRaw = lines.findIndex((l) => l.start === range.line.start && l.end === range.line.end);
       const startIdx = startIdxRaw >= 0 ? startIdxRaw : Math.max(0, lines.findIndex((l) => l.lineNo === range.startLineNo));
       const endIdxRaw = lines.findIndex((l) => l.lineNo === range.endLineNo && l.start >= range.line.start);
       const endIdx = endIdxRaw >= 0 ? endIdxRaw : startIdx;
-      const start = Math.max(0, startIdx - radius);
-      const end = Math.min(lines.length, endIdx + radius + 1);
       const meta = { path: range.line.path, name: range.line.name };
-      return lines.slice(start, end).map((line) => ({ ...line, ...meta }));
+      return lines.slice(startIdx, endIdx + 1).map((line) => ({ ...line, ...meta }));
     }
     function renderLineWindowHeatmap(kind, centerLine, scoreFor) {
       const windowLines = lineWindowForKind(kind, centerLine);
@@ -618,7 +585,7 @@
       }).join("")}</span>`;
     }
     function renderLineRangeHeatmap(kind, range, scoreFor) {
-      const windowLines = lineWindowForRange(kind, range);
+      const windowLines = linesForRange(kind, range);
       const maxScore = maxTokenScoreForLines(kind, windowLines, scoreFor);
       return `<span class="line-window ${kind}">${windowLines.map((line) => {
         const isTarget = range.startLineNo <= line.lineNo && line.lineNo <= range.endLineNo;
@@ -907,12 +874,6 @@
 
     // ---- ranking helpers ------------------------------------------------------
 
-    function topLineRows(rows, k) {
-      return rows
-        .map((r) => ({ ...r, startLineNo: r.line.lineNo, endLineNo: r.line.lineNo }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, k);
-    }
     function lineRangeLabel(row) {
       return row.startLineNo === row.endLineNo
         ? `line ${row.startLineNo}`
@@ -944,6 +905,61 @@
       return Array.from(byLine.values())
         .sort((a, b) => b.score - a.score)
         .slice(0, k);
+    }
+    function massChunksFromLineRows(rows, k = 5) {
+      if (!rows.length) return [];
+      const peak = rows.reduce((m, r) => Math.max(m, r.score), 0);
+      const threshold = peak * 0.12;
+      const hotRows = rows
+        .filter((r) => r.score > 0 && r.score >= threshold)
+        .sort((a, b) => a.line.path.localeCompare(b.line.path) || a.line.lineNo - b.line.lineNo);
+      const chunks = [];
+      for (const row of hotRows) {
+        const prev = chunks[chunks.length - 1];
+        if (prev && prev.line.path === row.line.path && row.line.lineNo === prev.endLineNo + 1) {
+          prev.endLineNo = row.line.lineNo;
+          prev.score += row.score;
+          if (row.bestTokenScore > prev.bestTokenScore) {
+            prev.bestTokenScore = row.bestTokenScore;
+            prev.idx = row.idx;
+          }
+        } else {
+          chunks.push({
+            key: row.key,
+            line: row.line,
+            startLineNo: row.line.lineNo,
+            endLineNo: row.line.lineNo,
+            score: row.score,
+            idx: row.idx,
+            bestTokenScore: row.bestTokenScore,
+          });
+        }
+      }
+      return chunks.sort((a, b) => b.score - a.score).slice(0, k);
+    }
+    function topContextMassChunksForQuery(qIdx, k = 5) {
+      const byLine = new Map();
+      const row = data.scores[qIdx] || [];
+      data.context_chunks.forEach((chunk, idx) => {
+        const score = row[idx] || 0;
+        if (score <= 0) return;
+        const line = lineForChunk("context", chunk);
+        const key = `${line.path}:${line.lineNo}`;
+        const item = byLine.get(key) || {
+          key,
+          line,
+          score: 0,
+          idx,
+          bestTokenScore: 0,
+        };
+        item.score += score;
+        if (score > item.bestTokenScore) {
+          item.bestTokenScore = score;
+          item.idx = idx;
+        }
+        byLine.set(key, item);
+      });
+      return massChunksFromLineRows(Array.from(byLine.values()), k);
     }
 
     // ---- detail pane ----------------------------------------------------------
@@ -981,7 +997,6 @@
         const contextLine = lineForChunk("context", cc);
         const label = `${contextLine.path}:${contextLine.lineNo}`;
         const ranked = topQueryLinesForContext(view.idx, 50);
-        const maxScore = ranked.reduce((m, r) => Math.max(m, r.score), 0) || 1;
         const items = ranked.map((r) => {
           return `
             <li data-q-idx="${r.qIdx}">
@@ -998,15 +1013,14 @@
           </header>
           <div class="body">
             <section>
-              <h4>Contributing query lines (${ranked.length})</h4>
+              <h4>Contributing query chunks (${ranked.length})</h4>
               <ol class="ranked clickable">${items || `<li><div class="text">No query content attends to this token.</div></li>`}</ol>
             </section>
           </div>`;
       } else if (view.kind === "query") {
         const q = data.query_chunks[view.idx];
         const queryLine = lineForChunk("query", q);
-        const ranked = topContextLinesForQuery(view.idx, 50);
-        const maxScore = ranked.reduce((m, r) => Math.max(m, r.score), 0) || 1;
+        const ranked = topContextMassChunksForQuery(view.idx, 50);
         const items = ranked.map((r) => `
           <li data-context-idx="${r.idx}">
             <div class="top">
@@ -1021,7 +1035,7 @@
           </header>
           <div class="body">
             <section>
-              <h4>Top context lines (${ranked.length})</h4>
+              <h4>Top context mass chunks (${ranked.length})</h4>
               <ol class="ranked clickable">${items || `<li><div class="text">No attention.</div></li>`}</ol>
             </section>
           </div>`;
@@ -1046,10 +1060,6 @@
       });
       resultsPane.scrollTop = 0;
     }
-    lineCountSelect.addEventListener("change", () => {
-      previewLineCount = Number(lineCountSelect.value) || 3;
-      if (currentDetailView) renderDetailPane(currentDetailView);
-    });
 
     // ---- doc view -------------------------------------------------------------
 
@@ -1090,31 +1100,6 @@
         }
       ));
       mainEl.appendChild(wrap);
-    }
-
-    function topContextLinesForQuery(qIdx, k = 5) {
-      const byLine = new Map();
-      const row = data.scores[qIdx] || [];
-      data.context_chunks.forEach((chunk, idx) => {
-        const score = row[idx] || 0;
-        if (score <= 0) return;
-        const line = lineForChunk("context", chunk);
-        const key = `${line.path}:${line.lineNo}`;
-        const item = byLine.get(key) || {
-          key,
-          line,
-          score: 0,
-          idx,
-          bestTokenScore: 0,
-        };
-        item.score += score;
-        if (score > item.bestTokenScore) {
-          item.bestTokenScore = score;
-          item.idx = idx;
-        }
-        byLine.set(key, item);
-      });
-      return topLineRows(Array.from(byLine.values()), k);
     }
 
     // ---- loading --------------------------------------------------------------
