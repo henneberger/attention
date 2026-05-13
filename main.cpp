@@ -57,6 +57,20 @@ struct CaptureContext {
 static const char * kContextOpen = "<CONTEXT>\n";
 static const char * kMiddle = "\n</CONTEXT>\n<QUERY>\n";
 static const char * kQueryClose = "\n</QUERY>";
+static const char * kDefaultInputPrompt =
+    "Find implementation evidence in the code for each specification item. "
+    "Prefer exact implementing functions, branches, data structures, and output fields. "
+    "Focus on semantic matches, not shared words.";
+
+static std::string make_prefix_text(const std::string & input_prompt) {
+    if (input_prompt.empty()) return kContextOpen;
+    std::string out = "<TASK>\n";
+    out += input_prompt;
+    if (out.back() != '\n') out += '\n';
+    out += "</TASK>\n\n";
+    out += kContextOpen;
+    return out;
+}
 
 struct TokenizedDoc {
     std::vector<llama_token> tokens;
@@ -1148,6 +1162,7 @@ struct Args {
     std::string query_tree;         // directory of multi-doc queries
     std::string query_glob = ".mdx"; // extension filter for query tree
     std::string out_path = "web/heatmap.tar.gz";
+    std::string input_prompt = kDefaultInputPrompt;
     std::string strip_context = "none";
     std::string strip_query = "none";
     std::string layers; // e.g. "14-20"; empty = default fractions
@@ -1196,6 +1211,7 @@ static Args parse_args(int argc, char ** argv) {
         else if (k == "--query") a.query_path = need("--query");
         else if (k == "--query-tree") a.query_tree = need("--query-tree");
         else if (k == "--query-glob") a.query_glob = need("--query-glob");
+        else if (k == "--prompt" || k == "--query-prompt") a.input_prompt = need(k.c_str());
         else if (k == "--per-file") a.per_file = true;
         else if (k == "--output") a.out_path = need("--output");
         else if (k == "--json") {
@@ -1217,7 +1233,7 @@ static Args parse_args(int argc, char ** argv) {
         else { log_line("unknown arg: %s", k.c_str()); std::exit(1); }
     }
     if (a.model.empty() || (a.query_path.empty() && a.query_tree.empty()) || (a.context_path.empty() && a.context_tree.empty())) {
-        log_line("usage: --model FILE (--query FILE | --query-tree DIR) (--context FILE | --context-tree DIR) [--per-file] [--output web/heatmap.tar.gz] [--ctx-size N] [--gpu-layers N] [--prune-top-k N] [--reasoning-steps N] [opts]");
+        log_line("usage: --model FILE (--query FILE | --query-tree DIR) (--context FILE | --context-tree DIR) [--prompt TEXT] [--per-file] [--output web/heatmap.tar.gz] [--ctx-size N] [--gpu-layers N] [--prune-top-k N] [--reasoning-steps N] [opts]");
         std::exit(1);
     }
     if (!path_ends_with(a.out_path, ".tar.gz") && !path_ends_with(a.out_path, ".tgz")) {
@@ -1351,6 +1367,9 @@ static int run_per_file_scan(const Args & args) {
         j.s << ",\"model\":"; j.escape(args.model);
         j.s << ",\"per_file\":true";
         j.s << ",\"query_items_count\":" << query_set.items.size();
+        if (!args.input_prompt.empty()) {
+            j.s << ",\"input_prompt\":"; j.escape(args.input_prompt);
+        }
         j.s << ",\"query_chunk_mode\":\"markdown_items\"";
         j.s << ",\"files_total\":" << ctx_paths.size();
         j.s << ",\"files_done\":" << written_files;
@@ -1455,7 +1474,7 @@ static int run_per_file_scan(const Args & args) {
         if (windows.empty()) windows.push_back({0, (int) file_chunks_local.size()});
 
         // ---- Per-window pass 1 + per-doc pass 2.
-        std::string prefix_text = kContextOpen;
+        std::string prefix_text = make_prefix_text(args.input_prompt);
         std::string middle_text = kMiddle;
         std::vector<int32_t> skip(selected_layers.begin(), selected_layers.end());
         size_t total_chunks_emitted = 0;
@@ -1799,7 +1818,7 @@ int main(int argc, char ** argv) {
         corpus_cursor += (int) text.size();
     };
 
-    append_text_inline(kContextOpen);
+    append_text_inline(make_prefix_text(args.input_prompt));
     int ctx_body_start_wrapped = corpus_cursor;
     int cache_hits = 0;
     std::string ctx_body_text;
@@ -2033,6 +2052,9 @@ int main(int argc, char ** argv) {
     }
     j.s << "]";
     j.s << ",\"sink_normalization\":" << (args.sink_normalization ? "true" : "false");
+    if (!args.input_prompt.empty()) {
+        j.s << ",\"input_prompt\":"; j.escape(args.input_prompt);
+    }
     j.s << ",\"score_prune_top_k\":" << args.prune_top_k;
     j.s << ",\"flash_attn\":\"disabled\"";
     j.s << "}";
